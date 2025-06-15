@@ -1,6 +1,4 @@
-<p style="color: green; font-size: 18px;">
-Vocasso
-</p>
+## 🎨 Vocasso
 
 ###  Bu uygulama bir ses dosyasını görsele dönüştürme amacı ile geliştirilmiştir.
 
