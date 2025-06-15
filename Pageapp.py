@@ -86,7 +86,6 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
         st.info(f"""
             🔊 **Sample Rate:** {mevcut_ayarlar['sample_rate']} Hz  
             🎚️ **Kanal:** {mevcut_ayarlar['channels_str']}  
-            📦 **Buffer:** {mevcut_ayarlar['chunk']} 
             """)
         with st.expander("🔧 Ses Ayarlarını Değiştir"):
             st.write("**Ses Kalitesi Ayarları**")
@@ -105,12 +104,7 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
                 index=mevcut_ayarlar['channels'] - 1
             )
 
-            chunk_size = st.selectbox(
-                "Buffer Boyutu",
-                [256, 512, 1024, 2048, 4096],
-                index=[256, 512, 1024, 2048, 4096].index(mevcut_ayarlar['chunk']),
-                help="Küçük değer = Daha az gecikme, Daha fazla CPU"
-            )
+
 
             # Ayarları uygula
             if st.button("🔄 Ayarları Uygula", use_container_width=True):
@@ -118,7 +112,7 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
                     if st.session_state.kaydedici.ayarlari_guncelle(
                             sample_rate=sample_rate,
                             channels=channels,
-                            chunk=chunk_size
+                            dtype='float32'
                     ):
                         st.success("✅ Ayarlar güncellendi!")
                         st.rerun()
