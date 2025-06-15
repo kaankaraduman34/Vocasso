@@ -3,12 +3,12 @@ import streamlit as st
 import time
 import os
 from datetime import datetime
-import transcriptor,painter
+import transcriptor, painter
 import sys
 
 # Ses kaydedici modülünü import et
 try:
-    from recorder import SesKaydedici, SesAyarlari,get_files
+    from recorder import SesKaydedici, SesAyarlari, get_files
 except ImportError:
     st.error("❌ recorder.py dosyası bulunamadı! Lütfen aynı klasörde olduğundan emin olun.")
     st.stop()
@@ -63,17 +63,13 @@ if st.session_state.secili_sayfa == "ana_sayfa":
     st.header("🏠 Ana Sayfa")
     st.write("---")
 
-
-
-
     st.subheader("Hoş Geldiniz!")
     st.write("""
         Bu uygulama ses kayıtlarını alarak bir görsele dönüştürme amacıyla tasarlanmıştır.
         """)
 
-
-
-    st.info("💡 İpucu: Sol taraftaki 'Ses kayıt' butonuna tıklayarak sesinizi kaydedin. Ardından Görsel üretmek için 'Görsel Üret' sayfasından ses kaydını seçerek ilerleyin!'")
+    st.info(
+        "💡 İpucu: Sol taraftaki 'Ses kayıt' butonuna tıklayarak sesinizi kaydedin. Ardından Görsel üretmek için 'Görsel Üret' sayfasından ses kaydını seçerek ilerleyin!'")
 
 elif st.session_state.secili_sayfa == "Ses Kayıt":
     col1, col2 = st.columns([3, 2])
@@ -86,6 +82,7 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
         st.info(f"""
             🔊 **Sample Rate:** {mevcut_ayarlar['sample_rate']} Hz  
             🎚️ **Kanal:** {mevcut_ayarlar['channels_str']}  
+            📦 **Buffer:** {mevcut_ayarlar['chunk']} 
             """)
         with st.expander("🔧 Ses Ayarlarını Değiştir"):
             st.write("**Ses Kalitesi Ayarları**")
@@ -104,7 +101,12 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
                 index=mevcut_ayarlar['channels'] - 1
             )
 
-
+            chunk_size = st.selectbox(
+                "Buffer Boyutu",
+                [256, 512, 1024, 2048, 4096],
+                index=[256, 512, 1024, 2048, 4096].index(mevcut_ayarlar['chunk']),
+                help="Küçük değer = Daha az gecikme, Daha fazla CPU"
+            )
 
             # Ayarları uygula
             if st.button("🔄 Ayarları Uygula", use_container_width=True):
@@ -112,7 +114,7 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
                     if st.session_state.kaydedici.ayarlari_guncelle(
                             sample_rate=sample_rate,
                             channels=channels,
-                            dtype='float32'
+                            chunk=chunk_size
                     ):
                         st.success("✅ Ayarlar güncellendi!")
                         st.rerun()
@@ -264,7 +266,7 @@ elif st.session_state.secili_sayfa == "Ses Kayıt":
         for i, kayit in enumerate(kayitlar):
             # Her kayıt için bir container
             with st.container():
-                kayit_col1, kayit_col2, kayit_col3, kayit_col4,kayit_col5 = st.columns([3, 2, 1, 2,2])
+                kayit_col1, kayit_col2, kayit_col3, kayit_col4, kayit_col5 = st.columns([3, 2, 1, 2, 2])
 
                 with kayit_col1:
                     # Son kayıt işareti
@@ -329,21 +331,19 @@ elif st.session_state.secili_sayfa == "gorsel_uret":
                 if openai_key != None:
                     if openai_key.strip():
                         st.session_state.saved_openai = openai_key
-                        st.session_state.transcriptor_client= transcriptor.set_OpenAI_api_key(st.session_state.saved_openai)
+                        st.session_state.transcriptor_client = transcriptor.set_OpenAI_api_key(
+                            st.session_state.saved_openai)
                         st.session_state.painter_client = painter.set_OpenAI_api_key(st.session_state.saved_openai)
-
 
                     st.success("✅ API Anahtarları kaydedildi!")
                 else:
                     st.error("❗ API Anahtarı boş bırakılamaz!")
 
-
-
     st.write("---")
 
     file_names = get_files()
 
-    col1 , col2,col3 = st.columns([1,1,2])
+    col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         st.markdown("""
                     <style>
@@ -361,10 +361,9 @@ elif st.session_state.secili_sayfa == "gorsel_uret":
             index=None
         )
 
-
     with col2:
 
-        if (selected_index !=None) and len(file_names) > 0:
+        if (selected_index != None) and len(file_names) > 0:
 
             st.markdown("""
             <style>
@@ -376,8 +375,8 @@ elif st.session_state.secili_sayfa == "gorsel_uret":
             st.markdown('<p class="big-font">Sesi dinle</p>', unsafe_allow_html=True)
             st.write("")
             st.write("")
-            st.session_state.file_path = "kayitlar/"+  file_names[selected_index]
-            st.audio(data= st.session_state.file_path)
+            st.session_state.file_path = "kayitlar/" + file_names[selected_index]
+            st.audio(data=st.session_state.file_path)
         elif len(file_names) > 0:
             st.markdown("""
                                     <style>
@@ -398,23 +397,25 @@ elif st.session_state.secili_sayfa == "gorsel_uret":
             st.markdown('<p class="big-font">Ses Kaydı Bulunamadı.</p>', unsafe_allow_html=True)
 
     st.write("---")
+
+
     def check_available():
         return (selected_index == None) or (openai_key == None)
 
+
     if check_available():
-
-        st.info("Görsel Üretmek için API Anahtarınızı girdiğinizden ve ses kaydını seçtiğinizden emin olun!",)
-    gorsel_uret = st.button("Görsel Üret",disabled=check_available())
-
-
+        st.info("Görsel Üretmek için API Anahtarınızı girdiğinizden ve ses kaydını seçtiğinizden emin olun!", )
+    gorsel_uret = st.button("Görsel Üret", disabled=check_available())
 
     if gorsel_uret:
         try:
-            with st.spinner("Ses transkript ediliyor..",show_time=True):
-                st.session_state.voice_prompt = transcriptor.transcribe(st.session_state.file_path,languages="tr",client=st.session_state.transcriptor_client)
+            with st.spinner("Ses transkript ediliyor..", show_time=True):
+                st.session_state.voice_prompt = transcriptor.transcribe(st.session_state.file_path, languages="tr",
+                                                                        client=st.session_state.transcriptor_client)
 
             with st.spinner("Görsel Üretiliyor..", show_time=True):
-                st.session_state.image_path = painter.generate_image(st.session_state.voice_prompt,client=st.session_state.painter_client)
+                st.session_state.image_path = painter.generate_image(st.session_state.voice_prompt,
+                                                                     client=st.session_state.painter_client)
                 st.image(st.session_state.image_path)
             st.write(st.session_state.voice_prompt)
         except openai.AuthenticationError:
@@ -431,7 +432,7 @@ elif st.session_state.secili_sayfa == "hakkinda":
     with col1:
         st.subheader("Bu Uygulama Hakkında")
         st.write("""
-        
+
         ### 🛠️ Özellikler
         - **Gelişmiş Ses Kayıt**: Ses kayıt menüsünde özelleştirilebilen kayıt ayarları.
         - **İsimlentirilebilen kayıt dosyaları**: Otomatik ya da isimlendirilebilen ses kayıtları
@@ -462,7 +463,7 @@ elif st.session_state.secili_sayfa == "hakkinda":
 
         st.metric("Streamlit Sürümü", f"{st.__version__}")
         st.metric("Python Sürümü", f"{sys.version_info.major}.{sys.version_info.minor}")
-        st.metric("OpenAI Sürümü",f"{openai.__version__}")
+        st.metric("OpenAI Sürümü", f"{openai.__version__}")
         st.metric("Toplam Sayfa", "4")
 
         st.write("---")
@@ -484,7 +485,6 @@ if st.session_state.kayit_aktif:
     )
     time.sleep(1)
     st.rerun()
-
 
 # Footer
 st.write("---")

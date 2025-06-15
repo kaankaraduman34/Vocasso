@@ -1,8 +1,7 @@
-import sounddevice as sd
+import pyaudio
 import wave
 import threading
 import time
-import numpy as np
 from datetime import datetime
 import os
 from dataclasses import dataclass, field
@@ -10,8 +9,6 @@ from typing import List, Optional, Dict, Any, Tuple
 import glob
 
 folder_path = "kayitlar/"
-
-
 @dataclass
 class KayitDurumu:
     aktif: bool = False
@@ -24,6 +21,7 @@ class KayitDurumu:
         """Başlangıç zamanından itibaren geçen süreyi hesaplar"""
         if self.aktif and self.baslangic_zamani:
             self.sure = time.time() - self.baslangic_zamani
+
 
 
 @dataclass
@@ -48,8 +46,8 @@ class SesAyarlari:
     """Ses kayıt ayarlarını tutan dataclass"""
     sample_rate: int = 44100
     channels: int = 1
-    dtype: str = 'int16'
-    device: Optional[int] = None  # None = varsayılan mikrofon
+    chunk: int = 1024
+    format: int = field(default_factory=lambda: pyaudio.paInt16)
 
     def __post_init__(self):
         """Dataclass oluşturulduktan sonra çağrılır"""
@@ -63,36 +61,29 @@ class SesAyarlari:
         if self.channels not in [1, 2]:
             raise ValueError(f"Geçersiz channels: {self.channels}")
 
-        if self.dtype not in ['int16', 'int32', 'float32', 'float64']:
-            raise ValueError(f"Geçersiz dtype: {self.dtype}")
+        if self.chunk not in [256, 512, 1024, 2048, 4096]:
+            raise ValueError(f"Geçersiz chunk: {self.chunk}")
 
 
 @dataclass
 class SesKaydedici:
     """
-    Sounddevice tabanlı kontrol edilebilir ses kayıt sınıfı
+    Dataclass tabanlı kontrol edilebilir ses kayıt sınıfı
     """
     # Ses ayarları
     ayarlar: SesAyarlari = field(default_factory=SesAyarlari)
 
     # Private alanlar (post_init'te initialize edilir)
     _durum: KayitDurumu = field(default_factory=KayitDurumu, init=False)
-    _kayit_verisi: List[np.ndarray] = field(default_factory=list, init=False)
+    _frames: List[bytes] = field(default_factory=list, init=False)
+    _audio: Optional[pyaudio.PyAudio] = field(default=None, init=False)
+    _stream: Optional[pyaudio.Stream] = field(default=None, init=False)
     _kayit_thread: Optional[threading.Thread] = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
-    _durdur_bayragi: threading.Event = field(default_factory=threading.Event, init=False)
 
     def __post_init__(self):
         """Dataclass oluşturulduktan sonra çağrılır"""
         self._durum.mesaj = "Kayıt için hazır"
-        # Mevcut ses cihazlarını kontrol et
-        try:
-            devices = sd.query_devices()
-            input_devices = [d for d in devices if d['max_input_channels'] > 0]
-            if not input_devices:
-                self._durum.mesaj = "Giriş cihazı bulunamadı!"
-        except Exception as e:
-            self._durum.mesaj = f"Ses cihazları kontrol edilemedi: {str(e)}"
 
     @property
     def kayit_devam_ediyor(self) -> bool:
@@ -104,7 +95,7 @@ class SesKaydedici:
     def frame_sayisi(self) -> int:
         """Thread-safe frame sayısı"""
         with self._lock:
-            return len(self._kayit_verisi)
+            return len(self._frames)
 
     def kayit_baslat(self) -> bool:
         """Kayıt başlatır"""
@@ -114,24 +105,30 @@ class SesKaydedici:
                 return False
 
             try:
-                # Mikrofon cihazlarını kontrol et
-                devices = sd.query_devices()
-                input_devices = [d for d in devices if d['max_input_channels'] > 0]
+                # PyAudio'yu başlat
+                self._audio = pyaudio.PyAudio()
 
-                if not input_devices:
+                # Mikrofon var mı kontrol et
+                if self._audio.get_device_count() == 0:
                     self._durum.mesaj = "Mikrofon bulunamadı!"
+                    self._audio.terminate()
                     return False
 
-                # Varsayılan giriş cihazını al
-                if self.ayarlar.device is None:
-                    self.ayarlar.device = sd.default.device[0]  # Varsayılan giriş cihazı
+                # Stream'i aç
+                self._stream = self._audio.open(
+                    format=self.ayarlar.format,
+                    channels=self.ayarlar.channels,
+                    rate=self.ayarlar.sample_rate,
+                    input=True,
+                    frames_per_buffer=self.ayarlar.chunk,
+                    input_device_index=None  # Varsayılan mikrofon
+                )
 
                 # Kayıt durumunu aktif et
                 self._durum.aktif = True
                 self._durum.baslangic_zamani = time.time()
                 self._durum.frame_sayisi = 0
-                self._kayit_verisi.clear()
-                self._durdur_bayragi.clear()
+                self._frames.clear()
 
                 # Kayıt thread'ini başlat
                 self._kayit_thread = threading.Thread(target=self._kayit_dongusu)
@@ -143,7 +140,7 @@ class SesKaydedici:
 
             except Exception as e:
                 self._durum.mesaj = f"Kayıt başlatılamadı: {str(e)}"
-                self._durum.aktif = False
+                self._temizle()
                 return False
 
     def kayit_durdur(self) -> bool:
@@ -155,48 +152,35 @@ class SesKaydedici:
 
             self._durum.aktif = False
             self._durum.mesaj = "Kayıt durduruluyor..."
-            self._durdur_bayragi.set()
 
         # Thread'in bitmesini bekle (lock dışında)
         if self._kayit_thread and self._kayit_thread.is_alive():
-            self._kayit_thread.join(timeout=3)
+            self._kayit_thread.join(timeout=2)
 
         with self._lock:
+            self._temizle()
             self._durum.mesaj = "Kayıt durduruldu!"
             return True
 
     def _kayit_dongusu(self) -> None:
         """Kayıt döngüsü (thread içinde çalışır)"""
         try:
-            # Her seferinde 0.1 saniye kayıt al
-            duration = 0.1
+            while True:
+                with self._lock:
+                    if not self._durum.aktif or not self._stream:
+                        break
 
-            while not self._durdur_bayragi.is_set():
-                try:
-                    # Ses verisi kaydet
-                    audio_data = sd.rec(
-                        int(duration * self.ayarlar.sample_rate),
-                        samplerate=self.ayarlar.sample_rate,
-                        channels=self.ayarlar.channels,
-                        dtype=self.ayarlar.dtype,
-                        device=self.ayarlar.device
-                    )
-
-                    # Kaydın tamamlanmasını bekle
-                    sd.wait()
-
-                    with self._lock:
-                        if not self._durum.aktif:
-                            break
-
-                        self._kayit_verisi.append(audio_data)
-                        self._durum.frame_sayisi = len(self._kayit_verisi)
-
-                except Exception as e:
-                    with self._lock:
+                    try:
+                        data = self._stream.read(self.ayarlar.chunk, exception_on_overflow=False)
+                        self._frames.append(data)
+                        self._durum.frame_sayisi = len(self._frames)
+                    except Exception as e:
                         self._durum.mesaj = f"Kayıt hatası: {str(e)}"
                         self._durum.aktif = False
                         break
+
+                # Kısa bir bekleme (CPU kullanımını azaltır)
+                time.sleep(0.001)
 
         except Exception as e:
             with self._lock:
@@ -206,7 +190,7 @@ class SesKaydedici:
     def kaydet(self, dosya_adi: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Kaydedilen veriyi dosyaya yazar"""
         with self._lock:
-            if not self._kayit_verisi:
+            if not self._frames:
                 self._durum.mesaj = "Kaydedilecek veri yok!"
                 return False, None
 
@@ -227,31 +211,11 @@ class SesKaydedici:
             dosya_yolu = os.path.join(kayitlar_klasoru, dosya_adi)
 
             try:
-                # Tüm kayıt verilerini birleştir
-                if self._kayit_verisi:
-                    tum_veri = np.concatenate(self._kayit_verisi, axis=0)
-
-                    # Soundfile kullanmak yerine wave modülü ile kaydet
-                    with wave.open(dosya_yolu, 'wb') as wf:
-                        wf.setnchannels(self.ayarlar.channels)
-
-                        # Dtype'a göre sample width belirle
-                        if self.ayarlar.dtype == 'int16':
-                            wf.setsampwidth(2)
-                            # Float verisini int16'ya dönüştür
-                            if tum_veri.dtype != np.int16:
-                                tum_veri = (tum_veri * 32767).astype(np.int16)
-                        elif self.ayarlar.dtype == 'int32':
-                            wf.setsampwidth(4)
-                            if tum_veri.dtype != np.int32:
-                                tum_veri = (tum_veri * 2147483647).astype(np.int32)
-                        else:
-                            # Float için int16'ya dönüştür
-                            wf.setsampwidth(2)
-                            tum_veri = (tum_veri * 32767).astype(np.int16)
-
-                        wf.setframerate(self.ayarlar.sample_rate)
-                        wf.writeframes(tum_veri.tobytes())
+                with wave.open(dosya_yolu, 'wb') as wf:
+                    wf.setnchannels(self.ayarlar.channels)
+                    wf.setsampwidth(self._audio.get_sample_size(self.ayarlar.format) if self._audio else 2)
+                    wf.setframerate(self.ayarlar.sample_rate)
+                    wf.writeframes(b''.join(self._frames))
 
                 self._durum.mesaj = f"Kayıt kaydedildi: {dosya_yolu}"
                 return True, dosya_yolu
@@ -260,13 +224,27 @@ class SesKaydedici:
                 self._durum.mesaj = f"Dosya kaydetme hatası: {str(e)}"
                 return False, None
 
+    def _temizle(self) -> None:
+        """Kaynakları temizler (lock içinde çağrılmalı)"""
+        try:
+            if self._stream:
+                self._stream.stop_stream()
+                self._stream.close()
+                self._stream = None
+
+            if self._audio:
+                self._audio.terminate()
+                self._audio = None
+        except:
+            pass
+
     def get_durum(self) -> KayitDurumu:
         """Kayıt durumunu döndürür"""
         with self._lock:
             # Süreyi güncelle
             if self._durum.aktif:
                 self._durum.guncelle_sure()
-                self._durum.frame_sayisi = len(self._kayit_verisi)
+                self._durum.frame_sayisi = len(self._frames)
                 self._durum.mesaj = f"Kayıt devam ediyor - Süre: {self._durum.sure:.1f} saniye"
 
             # Durum nesnesinin bir kopyasını döndür
@@ -310,8 +288,7 @@ class SesKaydedici:
     def ayarlari_guncelle(self,
                           sample_rate: Optional[int] = None,
                           channels: Optional[int] = None,
-                          dtype: Optional[str] = None,
-                          device: Optional[int] = None) -> bool:
+                          chunk: Optional[int] = None) -> bool:
         """Ses ayarlarını günceller (sadece kayıt dururken)"""
         with self._lock:
             if self._durum.aktif:
@@ -323,8 +300,7 @@ class SesKaydedici:
                 yeni_ayarlar = SesAyarlari(
                     sample_rate=sample_rate or self.ayarlar.sample_rate,
                     channels=channels or self.ayarlar.channels,
-                    dtype=dtype or self.ayarlar.dtype,
-                    device=device if device is not None else self.ayarlar.device
+                    chunk=chunk or self.ayarlar.chunk
                 )
 
                 self.ayarlar = yeni_ayarlar
@@ -340,75 +316,49 @@ class SesKaydedici:
         return {
             'sample_rate': self.ayarlar.sample_rate,
             'channels': self.ayarlar.channels,
-            'dtype': self.ayarlar.dtype,
-            'device': self.ayarlar.device,
+            'chunk': self.ayarlar.chunk,
+            'format': self.ayarlar.format,
             'channels_str': 'Mono' if self.ayarlar.channels == 1 else 'Stereo'
         }
-
-    def get_ses_cihazlari(self) -> List[Dict[str, Any]]:
-        """Mevcut ses giriş cihazlarını listeler"""
-        try:
-            devices = sd.query_devices()
-            input_devices = []
-
-            for i, device in enumerate(devices):
-                if device['max_input_channels'] > 0:
-                    input_devices.append({
-                        'index': i,
-                        'name': device['name'],
-                        'channels': device['max_input_channels'],
-                        'sample_rate': device['default_samplerate']
-                    })
-
-            return input_devices
-        except Exception as e:
-            return [{'error': f"Cihazlar listelenemedi: {str(e)}"}]
 
     def __del__(self):
         """Nesne silinirken kaynakları temizle"""
         if hasattr(self, '_durum') and self._durum.aktif:
             self.kayit_durdur()
+        if hasattr(self, '_lock'):
+            with self._lock:
+                self._temizle()
 
 
 # Test fonksiyonu
 if __name__ == "__main__":
-    print("=== Sounddevice Tabanlı Ses Kaydedici Test ===")
-
-    # Mevcut ses cihazlarını listele
-    print("\n🎤 Mevcut ses giriş cihazları:")
-    try:
-        devices = sd.query_devices()
-        for i, device in enumerate(devices):
-            if device['max_input_channels'] > 0:
-                print(f"  {i}: {device['name']} ({device['max_input_channels']} kanal)")
-    except Exception as e:
-        print(f"  Hata: {e}")
+    print("=== Dataclass Tabanlı Ses Kaydedici Test ===")
 
     # Özel ayarlarla kaydedici oluştur
     ozel_ayarlar = SesAyarlari(
         sample_rate=22050,
         channels=1,
-        dtype='int16'
+        chunk=512
     )
 
     kaydedici = SesKaydedici(ayarlar=ozel_ayarlar)
 
-    print(f"\n📊 Ses ayarları: {kaydedici.get_ses_ayarlari()}")
+    print(f"Ses ayarları: {kaydedici.get_ses_ayarlari()}")
 
-    print("\n🔴 Kayıt başlatılıyor...")
+    print("\nKayıt başlatılıyor...")
     if kaydedici.kayit_baslat():
         print("Kayıt başladı! 3 saniye beklenecek...")
 
         for i in range(3):
             time.sleep(1)
             durum = kaydedici.get_durum()
-            print(f"⏱️  Durum: {durum.mesaj} | Frame: {durum.frame_sayisi}")
+            print(f"Durum: {durum.mesaj} | Frame: {durum.frame_sayisi}")
 
-        print("\n⏹️  Kayıt durduruluyor...")
+        print("\nKayıt durduruluyor...")
         kaydedici.kayit_durdur()
 
-        print("💾 Kayıt dosyaya kaydediliyor...")
-        basarili, dosya_yolu = kaydedici.kaydet("sounddevice_test.wav")
+        print("Kayıt dosyaya kaydediliyor...")
+        basarili, dosya_yolu = kaydedici.kaydet("dataclass_test.wav")
 
         if basarili:
             print(f"✅ Başarılı! Dosya: {dosya_yolu}")
@@ -425,11 +375,9 @@ if __name__ == "__main__":
         durum = kaydedici.get_durum()
         print(f"❌ Kayıt başlatılamadı: {durum.mesaj}")
 
-    print("\n✨ Test tamamlandı ===")
-
+    print("\n=== Test tamamlandı ===")
 
 def get_files():
-    """Kayıtlar klasöründeki dosyaları listeler"""
     if os.path.exists(folder_path):
         file_paths = glob.glob(os.path.join(folder_path, "*"))
         file_names = [os.path.basename(path) for path in file_paths]

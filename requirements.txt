@@ -3,5 +3,4 @@ streamlit==1.45.1
 pillow==11.2.1
 requests==2.32.3
 Wave==0.0.2
-sounddevice==0.5.2
-numpy==2.2.6
+PyAudio==0.2.14
