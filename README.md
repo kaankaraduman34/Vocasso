@@ -4,6 +4,8 @@
 <br>
 <br>
 
+> [!NOTE]
+> Localde sanal ortam oluşturduktan sonra terminale aşağıdaki kodu yazarak gerekli bağımlıkları kurun: 
 Localde sanal ortam oluşturduktan sonra terminale aşağıdaki kodu yazarak gerekli bağımlıkları kurun: 
 ## pip install -r requirements.txt
 Bağımlılıklar kurulduktan sonra terminale bu kodu yazarak uygulamayı başlatın: 
