@@ -13,4 +13,6 @@ Localde sanal ortam oluşturduktan sonra terminale aşağıdaki kodu yazarak ger
 > Bağımlılıklar kurulduktan sonra terminale bu kodu yazarak uygulamayı başlatın: 
 ## streamlit run ./app.py
 
-OpenAI API Key gereklidir!
+
+> [!IMPORTANT]
+> OpenAI API Key gereklidir!
