@@ -1,4 +1,4 @@
-# Vocasso
+🎨 **Vocasso**
 ###  Bu uygulama bir ses dosyasını görsele dönüştürme amacı ile geliştirilmiştir.
 
 <br>
